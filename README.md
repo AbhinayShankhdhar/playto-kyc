@@ -1,135 +1,158 @@
 # Playto KYC Pipeline
 
-Full-stack KYC onboarding system for Playto Pay. Built with Django + DRF (backend) and React + Tailwind (frontend).
+KYC onboarding system for Playto Pay — merchants submit verification documents, reviewers approve/reject via a queue dashboard.
 
-## Features
-
-- Multi-step KYC form with save-and-resume
-- Enforced state machine (illegal transitions → 400)
-- File upload validation (PDF/JPG/PNG, max 5 MB)
-- Reviewer dashboard with SLA tracking (>24h = at_risk)
-- Merchant isolation (Merchant A cannot see Merchant B's data)
-- Notification event log on every state change
+## Stack
+- **Backend:** Django 4.2 + DRF, SQLite (dev) / PostgreSQL (prod)
+- **Frontend:** React + Vite + Tailwind CSS (served from Django in prod)
+- **Auth:** DRF Token Authentication
 
 ---
 
 ## Local Setup
 
-### Prerequisites
-- Python 3.10+
-- Node.js 18+
-- pip
-
 ### Backend
-
 ```bash
 cd backend
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Run migrations
 python manage.py migrate
-
-# Seed test data
-python manage.py shell < seed.py
-
-# Start server
+python seed.py
 python manage.py runserver
+# → http://localhost:8000
 ```
 
-Backend runs at: http://localhost:8000
-
-### Frontend
-
+### Frontend (dev mode)
 ```bash
 cd frontend
-
-# Install
 npm install
-
-# Start
-npm start
+npm run dev
+# → http://localhost:5173
 ```
 
-Frontend runs at: http://localhost:3000
-
----
-
-## Demo Credentials (after running seed)
-
-| Role     | Username         | Password     |
-|----------|------------------|--------------|
-| Reviewer | reviewer1        | reviewer123  |
-| Merchant | merchant_draft   | merchant123  |
-| Merchant | merchant_review  | merchant123  |
-
----
-
-## Running Tests
-
+### Run Tests
 ```bash
 cd backend
-python manage.py test kyc_app
+python manage.py test kyc --verbosity=2
+# Runs 12 tests — state machine + auth isolation
 ```
 
 ---
 
-## API Reference
+## Deploy to Railway (Recommended)
 
-All endpoints under `/api/v1/`
+1. Push repo to GitHub
+2. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub
+3. Set these environment variables in Railway dashboard:
+   ```
+   SECRET_KEY=<generate a random 50-char string>
+   DEBUG=False
+   ALLOWED_HOSTS=.railway.app
+   DATABASE_URL=<Railway auto-fills this if you add a Postgres plugin>
+   ```
+4. Railway will auto-detect `nixpacks.toml` and:
+   - Install Python deps + build React
+   - Run `migrate` + `seed.py` + `collectstatic` (via Procfile release phase)
+   - Start gunicorn
+5. Frontend is served by Django from `frontend/dist/`
+
+## Deploy to Render
+
+1. Push to GitHub
+2. New Web Service → connect repo
+3. Build Command: `pip install -r backend/requirements.txt && cd frontend && npm ci && npm run build`
+4. Start Command: `cd backend && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT`
+5. Add env vars: `SECRET_KEY`, `DEBUG=False`, `DATABASE_URL` (add a Postgres database)
+
+---
+
+## Demo Credentials
+
+| Role | Username | Password | Notes |
+|------|----------|----------|-------|
+| Reviewer | `reviewer1` | `reviewer123` | Full queue + approve/reject |
+| Merchant | `merchant_arjun` | `merchant123` | Draft submission — can edit & submit |
+| Merchant | `merchant_priya` | `merchant123` | Under review, **SLA at risk ⚠️** |
+
+---
+
+## API Reference (all under `/api/v1/`)
 
 ### Auth
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/auth/register/` | Register user |
-| POST | `/auth/login/` | Get token |
-| GET  | `/auth/me/` | Current user info |
+| POST | `/auth/register/` | Register (role: merchant/reviewer) |
+| POST | `/auth/login/` | Login → returns token |
+| GET | `/auth/me/` | Current user info |
 
 ### Merchant
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET/POST | `/submissions/` | List / create submissions |
-| GET/PATCH | `/submissions/<id>/` | View / update draft |
-| POST | `/submissions/<id>/submit/` | Submit for review |
-| POST | `/submissions/<id>/documents/<type>/` | Upload doc (pan/aadhaar/bank_statement) |
+| GET | `/merchant/submissions/` | My submissions only |
+| POST | `/merchant/submissions/` | Create new draft |
+| GET | `/merchant/submissions/:id/` | View own submission |
+| PATCH | `/merchant/submissions/:id/` | Edit (only draft/more_info_requested) |
+| POST | `/merchant/submissions/:id/submit/` | Submit KYC |
 
 ### Reviewer
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/reviewer/queue/` | Queue (oldest first) |
+| GET | `/reviewer/queue/` | Active queue, oldest first |
+| GET | `/reviewer/submissions/` | All submissions |
+| GET | `/reviewer/submissions/:id/` | Submission detail |
+| POST | `/reviewer/submissions/:id/transition/` | Change state |
 | GET | `/reviewer/metrics/` | Dashboard metrics |
-| GET | `/reviewer/submissions/<id>/` | Full submission detail |
-| POST | `/reviewer/submissions/<id>/transition/` | Change state |
 
-### Notifications
+### Other
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/notifications/` | Merchant's notification log |
+| GET | `/notifications/` | Notification event log |
 
 ---
 
 ## State Machine
 
 ```
-draft → submitted → under_review → approved (terminal)
-                                 → rejected (terminal)
-                                 → more_info_requested → submitted (loop)
+draft ──→ submitted ──→ under_review ──→ approved
+                                    ├──→ rejected
+                                    └──→ more_info_requested ──→ submitted (loop)
 ```
+
+Illegal transitions return HTTP 400 with a descriptive error. State logic lives entirely in `kyc/models.py::KYCState`.
+
+## File Upload Rules
+- Accepted: `.pdf`, `.jpg`, `.jpeg`, `.png`
+- Max size: **5 MB** — validated server-side, extension check
+- Returns 400 with clear message on violation
+
+## SLA Tracking
+Submissions in queue > 24 hours: `is_at_risk: true` — computed dynamically from `submitted_at`, never stored as a stale flag.
 
 ---
 
-## Deployment (Render)
+## Project Structure
 
-1. Create a new Web Service on Render, connect GitHub repo
-2. Backend:
-   - Build: `pip install -r requirements.txt && python manage.py migrate`
-   - Start: `gunicorn kyc_project.wsgi`
-   - Env vars: `SECRET_KEY`, `DEBUG=False`, `ALLOWED_HOSTS=your-app.onrender.com`
-3. Frontend:
-   - Build: `npm run build`
-   - `REACT_APP_API_URL=https://your-backend.onrender.com/api/v1`
+```
+playto-kyc/
+├── backend/
+│   ├── kyc/
+│   │   ├── models.py        # KYCState machine + all models
+│   │   ├── views.py         # API views
+│   │   ├── serializers.py   # DRF serializers + DocumentField validation
+│   │   ├── permissions.py   # IsMerchant, IsReviewer
+│   │   ├── urls.py          # All routes
+│   │   └── tests.py         # 12 tests
+│   ├── config/
+│   │   ├── settings.py      # Env-aware settings (SQLite/Postgres)
+│   │   └── urls.py          # Serves React build + API
+│   ├── requirements.txt
+│   └── seed.py              # Idempotent seed
+├── frontend/
+│   └── src/
+│       ├── App.jsx           # Full UI (auth, merchant flow, reviewer dashboard)
+│       └── api.js            # Typed API client
+├── nixpacks.toml             # Railway build config
+├── Procfile                  # Railway start + release commands
+├── render.yaml               # Render.com config
+├── README.md
+└── EXPLAINER.md
+```

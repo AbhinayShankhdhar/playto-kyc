@@ -1,90 +1,99 @@
+#!/usr/bin/env python
 """
-Seed script — creates test data for the Playto KYC demo.
-
-Usage:
-    cd backend
-    python manage.py shell < seed.py
-    # OR
-    python seed.py  (if run from project root with DJANGO_SETTINGS_MODULE set)
+Seed script — idempotent, safe to run on every deploy.
+Creates: 2 merchants (draft + under_review) + 1 reviewer.
 """
+import os, sys, django
 
-import os
-import sys
-import django
-
-# Allow running directly: python seed.py
-if __name__ == '__main__':
-    sys.path.insert(0, os.path.dirname(__file__))
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'kyc_project.settings')
-    django.setup()
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+django.setup()
 
 from django.contrib.auth.models import User
 from rest_framework.authtoken.models import Token
-from kyc_app.models import KYCSubmission, KYCState, UserProfile
-
-
-def create_user(username, password, email, role):
-    user, created = User.objects.get_or_create(username=username)
-    user.set_password(password)
-    user.email = email
-    user.save()
-    UserProfile.objects.get_or_create(user=user, defaults={'role': role})
-    # Fix role if user already existed
-    profile = user.profile
-    profile.role = role
-    profile.save()
-    token, _ = Token.objects.get_or_create(user=user)
-    print(f"  {'Created' if created else 'Updated'}: {role} '{username}' | token: {token.key}")
-    return user
-
-
-print("\n=== Playto KYC Seed Script ===\n")
-
-# 1. Reviewer
-reviewer = create_user('reviewer1', 'reviewer123', 'reviewer@playto.so', 'reviewer')
-
-# 2. Merchant A — submission in DRAFT
-merchant_a = create_user('merchant_draft', 'merchant123', 'draft@example.com', 'merchant')
-sub_a, _ = KYCSubmission.objects.get_or_create(
-    merchant=merchant_a,
-    defaults={
-        'full_name': 'Rahul Sharma',
-        'email': 'rahul@example.com',
-        'phone': '+91-9876543210',
-        'business_name': 'Sharma Digital Agency',
-        'business_type': 'agency',
-        'monthly_volume_usd': 5000,
-        'state': KYCState.DRAFT,
-    }
-)
-print(f"  Submission #{sub_a.pk}: merchant_draft → state={sub_a.state}")
-
-# 3. Merchant B — submission in UNDER_REVIEW
-merchant_b = create_user('merchant_review', 'merchant123', 'review@example.com', 'merchant')
+from kyc.models import KYCSubmission, KYCState, UserProfile, NotificationEvent
 from django.utils import timezone
-sub_b, created_b = KYCSubmission.objects.get_or_create(
-    merchant=merchant_b,
-    defaults={
-        'full_name': 'Priya Singh',
-        'email': 'priya@example.com',
-        'phone': '+91-9123456789',
-        'business_name': 'Singh Freelance Studio',
-        'business_type': 'freelancer',
-        'monthly_volume_usd': 2000,
-        'state': KYCState.UNDER_REVIEW,
-        'submitted_at': timezone.now() - timezone.timedelta(hours=30),  # triggers SLA flag
-        'reviewer': reviewer,
-    }
-)
-if not created_b:
-    sub_b.state = KYCState.UNDER_REVIEW
-    sub_b.submitted_at = timezone.now() - timezone.timedelta(hours=30)
-    sub_b.reviewer = reviewer
-    sub_b.save()
-print(f"  Submission #{sub_b.pk}: merchant_review → state={sub_b.state} (SLA at risk: {sub_b.is_sla_at_risk})")
+from datetime import timedelta
 
-print("\n=== Seed complete. Login credentials ===")
-print("  Reviewer  → username: reviewer1      | password: reviewer123")
-print("  Merchant1 → username: merchant_draft  | password: merchant123")
-print("  Merchant2 → username: merchant_review | password: merchant123")
-print()
+
+def get_or_create_user(username, password, role, email=''):
+    user, created = User.objects.get_or_create(username=username, defaults={'email': email})
+    if created:
+        user.set_password(password)
+        user.save()
+        UserProfile.objects.create(user=user, role=role)
+        print(f"  Created {role}: {username}")
+    else:
+        print(f"  Exists  {role}: {username}")
+    token, _ = Token.objects.get_or_create(user=user)
+    return user, token
+
+
+print("\n🌱 Seeding Playto KYC database...")
+
+# ── Reviewer ──────────────────────────────────────────────────────────────
+reviewer, r_tok = get_or_create_user(
+    'reviewer1', 'reviewer123', 'reviewer', 'reviewer@playto.so'
+)
+
+# ── Merchant 1: DRAFT ────────────────────────────────────────────────────
+m1, m1_tok = get_or_create_user(
+    'merchant_arjun', 'merchant123', 'merchant', 'arjun@example.com'
+)
+if not KYCSubmission.objects.filter(merchant=m1).exists():
+    KYCSubmission.objects.create(
+        merchant=m1,
+        state=KYCState.DRAFT,
+        full_name='Arjun Sharma',
+        email='arjun@example.com',
+        phone='+91 98765 43210',
+        business_name='Arjun Digital Studio',
+        business_type='agency',
+        expected_monthly_volume=5000.00,
+    )
+    print("  Created draft submission for merchant_arjun")
+
+# ── Merchant 2: UNDER_REVIEW, AT RISK (30h old) ──────────────────────────
+m2, m2_tok = get_or_create_user(
+    'merchant_priya', 'merchant123', 'merchant', 'priya@example.com'
+)
+if not KYCSubmission.objects.filter(merchant=m2).exists():
+    sub2 = KYCSubmission.objects.create(
+        merchant=m2,
+        state=KYCState.UNDER_REVIEW,
+        full_name='Priya Mehta',
+        email='priya@example.com',
+        phone='+91 91234 56789',
+        business_name='Priya Freelance Services',
+        business_type='freelancer',
+        expected_monthly_volume=2000.00,
+        reviewer=reviewer,
+        reviewer_notes='Initial review in progress.',
+        submitted_at=timezone.now() - timedelta(hours=30),  # Triggers AT RISK flag
+    )
+    NotificationEvent.objects.create(
+        merchant=m2,
+        submission=sub2,
+        event_type='state_changed_to_under_review',
+        payload={
+            'from_state': 'submitted',
+            'to_state': 'under_review',
+            'reason': '',
+            'actor_id': reviewer.id,
+        }
+    )
+    print("  Created under_review submission for merchant_priya (AT RISK)")
+
+print(f"""
+✅ Seed complete!
+
+🔑 Login credentials:
+   reviewer1 / reviewer123        → Reviewer dashboard
+   merchant_arjun / merchant123   → Draft KYC (edit & submit)
+   merchant_priya / merchant123   → Under review (SLA at risk ⚠️)
+
+📊 Database:
+   Users:       {User.objects.count()}
+   Submissions: {KYCSubmission.objects.count()}
+   Events:      {NotificationEvent.objects.count()}
+""")

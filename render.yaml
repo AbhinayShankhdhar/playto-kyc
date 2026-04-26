@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: playto-kyc
+    runtime: python
+    buildCommand: |
+      pip install -r backend/requirements.txt
+      cd frontend && npm ci && npm run build
+    startCommand: cd backend && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT
+    envVars:
+      - key: DEBUG
+        value: False
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ALLOWED_HOSTS
+        value: .onrender.com
+      - key: PYTHON_VERSION
+        value: 3.12.0
+    buildFilter:
+      paths:
+        - backend/**
+        - frontend/**

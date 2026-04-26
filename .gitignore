@@ -1,19 +1,29 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
-venv/
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
 .env
-db.sqlite3
-media/
-staticfiles/
+venv/
+env/
+
+# Django
+*.sqlite3
+/backend/media/
+/backend/staticfiles/
+/backend/static/
 
 # Node
 node_modules/
-build/
-.env.local
+/frontend/dist/
 
 # IDE
 .vscode/
 .idea/
-*.DS_Store
+*.swp
+.DS_Store
